@@ -1,0 +1,9 @@
+[
+  "discord_voice.node",
+  "gpu_encoder_helper.exe",
+  "index.js",
+  "mediapipe.dll",
+  "package.json",
+  "selfie_segmentation.tflite",
+  "selfie_segmentation_landscape.tflite"
+]
