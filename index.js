@@ -50,10 +50,13 @@ const defaultAudioSubsystem = process.platform === 'win32' ? 'experimental' : 's
 const audioSubsystem = appSettings
   ? appSettings.getSync('audioSubsystem', defaultAudioSubsystem)
   : defaultAudioSubsystem;
-const offloadAdmControls = appSettings ? appSettings.getSync('offloadAdmControls', false) : false;
+const offloadAdmControls = appSettings ? appSettings.getSync('offloadAdmControls', true) : true;
 const debugLogging = appSettings ? appSettings.getSync('debugLogging', true) : true;
+const maxLogBytesRaw = appSettings ? appSettings.getSync('maxLogBytes', 5000000) : 5000000;
+// Clamp to [1, 2^32-1] to safely fit in a size_t on both 32-bit and 64-bit platforms; reject NaN/Infinity/negatives/zero.
+const maxLogBytes =
+  Number.isFinite(maxLogBytesRaw) && maxLogBytesRaw > 0 ? Math.min(Math.trunc(maxLogBytesRaw), 0xffffffff) : 5000000;
 const asyncVideoInputDeviceInit = appSettings ? appSettings.getSync('asyncVideoInputDeviceInit', false) : false;
-const asyncClipsSourceDeinit = appSettings ? appSettings.getSync('asyncClipsSourceDeinit', false) : false;
 
 function versionGreaterThanOrEqual(v1, v2) {
   const v1parts = v1.split('.').map(Number);
@@ -157,7 +160,6 @@ features.declareSupported('offload_adm_controls');
 features.declareSupported('audio_codec_red');
 features.declareSupported('sidechain_compression');
 features.declareSupported('async_video_input_device_init');
-features.declareSupported('async_clips_source_deinit');
 features.declareSupported('port_aware_latency_testing');
 
 if (process.platform === 'darwin') {
@@ -199,6 +201,7 @@ if (process.platform === 'linux') {
 
 if (
   process.platform === 'win32'
+  || process.platform === 'linux'
   || (process.platform === 'darwin' && versionGreaterThanOrEqual(os.release(), '16.0.0'))
 ) {
   features.declareSupported('mediapipe');
@@ -264,7 +267,6 @@ function bindConnectionInstance(instance) {
     configureConnectionRetries: (baseDelay, maxDelay, maxAttempts) =>
       instance.configureConnectionRetries(baseDelay, maxDelay, maxAttempts),
     setOnSpeakingCallback: (callback) => instance.setOnSpeakingCallback(callback),
-    setOnNativeMuteToggleCallback: (callback) => instance.setOnNativeMuteToggleCallback?.(callback),
     setOnNativeMuteChangedCallback: (callback) => instance.setOnNativeMuteChangedCallback?.(callback),
     setOnSpeakingWhileMutedCallback: (callback) => instance.setOnSpeakingWhileMutedCallback(callback),
     setPingInterval: (interval) => instance.setPingInterval(interval),
@@ -300,6 +302,7 @@ function bindConnectionInstance(instance) {
     stopSamplesLocalPlayback: (sourceId) => instance.stopSamplesLocalPlayback(sourceId),
     stopAllSamplesLocalPlayback: () => instance.stopAllSamplesLocalPlayback(),
     setOnVideoEncoderFallbackCallback: (codecName) => instance.setOnVideoEncoderFallbackCallback(codecName),
+    setOnVideoDecoderFallbackCallback: (codecName) => instance.setOnVideoDecoderFallbackCallback(codecName),
     setOnRtcpMessageCallback: (callback) => instance.setOnRtcpMessageCallback?.(callback),
     presentDesktopSourcePicker: (style) => instance.presentDesktopSourcePicker(style),
   };
@@ -367,10 +370,6 @@ VoiceEngine.setAsyncVideoInputDeviceInitSetting = function (enable) {
   appSettings.set('asyncVideoInputDeviceInit', enable);
 };
 
-VoiceEngine.setAsyncClipsSourceDeinitSetting = function (enable) {
-  appSettings.set('asyncClipsSourceDeinit', enable);
-};
-
 VoiceEngine.setDebugLogging = function (enable) {
   if (appSettings == null) {
     log('warn', 'Unable to access app settings.');
@@ -394,31 +393,6 @@ VoiceEngine.getDebugLogging = function () {
 
 const videoStreams = {};
 const directVideoStreams = {};
-
-const ensureCanvasContext = function (sinkId) {
-  let canvas = document.getElementById(sinkId);
-  if (canvas == null) {
-    for (const popout of window.popouts.values()) {
-      const element = popout.document != null && popout.document.getElementById(sinkId);
-      if (element != null) {
-        canvas = element;
-        break;
-      }
-    }
-
-    if (canvas == null) {
-      return null;
-    }
-  }
-
-  const context = canvas.getContext('2d');
-  if (context == null) {
-    log('info', `Failed to initialize context for sinkId ${sinkId}`);
-    return null;
-  }
-
-  return context;
-};
 
 let activeSinksChangeCallback;
 VoiceEngine.setActiveSinksChangeCallback = function (callback) {
@@ -476,28 +450,7 @@ function addVideoOutputSinkInternal(sinkId, streamId, frameCallback) {
   }
 }
 
-VoiceEngine.addVideoOutputSink = function (sinkId, streamId, frameCallback) {
-  let canvasContext = null;
-  addVideoOutputSinkInternal(sinkId, streamId, (imageData) => {
-    if (canvasContext == null) {
-      canvasContext = ensureCanvasContext(sinkId);
-      if (canvasContext == null) {
-        return;
-      }
-    }
-    if (frameCallback != null) {
-      frameCallback(imageData.width, imageData.height);
-    }
-    // [adill] NB: Electron 9+ on macOS would show massive leaks in the the GPU helper process when a non-Discord
-    // window completely occludes the Discord window. Adding this tiny readback ameliorates the issue. We tried WebGL
-    // rendering which did not exhibit the issue, however, the context limit of 16 was too small to be a real
-    // alternative.
-    canvasContext.getImageData(0, 0, 1, 1);
-    canvasContext.putImageData(imageData, 0, 0);
-  });
-};
-
-VoiceEngine.removeVideoOutputSink = function (sinkId, streamId) {
+function removeVideoOutputSink(sinkId, streamId) {
   const sinks = videoStreams[streamId];
   if (sinks != null) {
     sinks.delete(sinkId);
@@ -508,7 +461,7 @@ VoiceEngine.removeVideoOutputSink = function (sinkId, streamId) {
       notifyActiveSinksChange(streamId);
     }
   }
-};
+}
 
 // We wrap the direct video calls so we can keep track of all active
 // video output sinks
@@ -533,12 +486,12 @@ VoiceEngine.getNextVideoOutputFrame = function (streamId) {
 
   return new Promise((resolve, reject) => {
     setTimeout(() => {
-      VoiceEngine.removeVideoOutputSink(nextVideoFrameSinkId, streamId);
+      removeVideoOutputSink(nextVideoFrameSinkId, streamId);
       reject(new Error('getNextVideoOutputFrame timeout'));
     }, 5000);
 
     addVideoOutputSinkInternal(nextVideoFrameSinkId, streamId, (imageData) => {
-      VoiceEngine.removeVideoOutputSink(nextVideoFrameSinkId, streamId);
+      removeVideoOutputSink(nextVideoFrameSinkId, streamId);
       resolve({
         width: imageData.width,
         height: imageData.height,
@@ -569,13 +522,13 @@ VoiceEngine.initialize({
   logLevel,
   dataDirectory,
   logDirectory,
+  maxLogBytes,
   useFakeVideoCapture,
   useFileForFakeVideoCapture,
   useFakeAudioCapture,
   useFilesForFakeAudioCapture,
   offloadAdmControls,
   asyncVideoInputDeviceInit,
-  asyncClipsSourceDeinit,
 });
 
 module.exports = VoiceEngine;
