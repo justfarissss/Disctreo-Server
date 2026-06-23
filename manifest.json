@@ -1,9 +1,7 @@
 [
   "discord_voice.node",
+  "capture_helper.exe",
   "gpu_encoder_helper.exe",
-  "selfie_segmentation.tflite",
-  "selfie_segmentation_landscape.tflite",
   "mediapipe.dll",
-  "package.json",
-  "index.js"
+  "openh264-2.2.0-win64.dll"
 ]
