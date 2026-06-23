@@ -1,8 +1,0 @@
-{
-  "name": "disctreo-server",
-  "version": "1.0.0",
-  "scripts": {
-    "build": "node generate_manifest.js",
-    "start": "node index.js"
-  }
-}
