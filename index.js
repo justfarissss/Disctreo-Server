@@ -12,48 +12,21 @@ const isElectronRenderer =
 const appSettings = isElectronRenderer ? window.DiscordNative.settings : global.appSettings;
 const features = isElectronRenderer ? window.DiscordNative.features : global.features;
 const mainArgv = isElectronRenderer ? window.DiscordNative.processUtils.getMainArgvSync() : [];
-
 let dataDirectory;
-if (isElectronRenderer) {
-  try {
-    dataDirectory =
-      isElectronRenderer && window.DiscordNative.fileManager.getModuleDataPathSync
-        ? path.join(window.DiscordNative.fileManager.getModuleDataPathSync(), 'discord_voice')
-        : null;
-  } catch (e) {
-    console.error('Failed to get data directory: ', e);
-  }
-  if (dataDirectory != null) {
-    try {
-      fs.mkdirSync(dataDirectory, {recursive: true});
-    } catch (e) {
-      console.warn("Couldn't create voice data directory ", dataDirectory, ':', e);
-    }
-  }
+
+try {
+  dataDirectory =
+    isElectronRenderer && window.DiscordNative.fileManager.getModuleDataPathSync
+      ? path.join(window.DiscordNative.fileManager.getModuleDataPathSync(), 'discord_voice')
+      : null;
+} catch (e) {
+  console.error('Failed to get data directory: ', e);
 }
 
-// Init logging
-const isFileManagerAvailable = window?.DiscordNative?.fileManager;
-const isLogDirAvailable = isFileManagerAvailable?.getAndCreateLogDirectorySync;
-let logDirectory;
-if (isLogDirAvailable) {
-  logDirectory = window.DiscordNative.fileManager.getAndCreateLogDirectorySync();
-  // TODO If/when we move away from utilizing webRTC logging in voice:
-  //   This module uses a different approach to the log-level, particularly an integer value rather than a string.
-  //   We should eventually try to align on the string approach (and querying it from our common settings) used by other modules.
-  // logLevel = window.DiscordNative.fileManager.logLevelSync();
-} else {
-  console.warn('Unable to find log directory');
-}
-
-const defaultAudioSubsystem = process.platform === 'win32' ? 'experimental' : 'standard';
-const audioSubsystem = appSettings
-  ? appSettings.getSync('audioSubsystem', defaultAudioSubsystem)
-  : defaultAudioSubsystem;
-const offloadAdmControls = appSettings ? appSettings.getSync('offloadAdmControls', false) : false;
-const debugLogging = appSettings ? appSettings.getSync('debugLogging', true) : true;
-const asyncVideoInputDeviceInit = appSettings ? appSettings.getSync('asyncVideoInputDeviceInit', false) : false;
-const asyncClipsSourceDeinit = appSettings ? appSettings.getSync('asyncClipsSourceDeinit', false) : false;
+const useLegacyAudioDevice = true
+const audioSubsystemSelected = "legacy"
+const audioSubsystem = useLegacyAudioDevice || audioSubsystemSelected;
+const debugLogging = false;
 
 function versionGreaterThanOrEqual(v1, v2) {
   const v1parts = v1.split('.').map(Number);
@@ -78,7 +51,7 @@ function parseArguments(args) {
     'use-fake-video-capture': 'Use fake video capture device.',
     'use-file-for-fake-video-capture': 'Use local file for fake video capture.',
     'use-fake-audio-capture': 'Use fake audio capture device.',
-    'use-files-for-fake-audio-capture': 'Use local files for fake audio capture.',
+    'use-file-for-fake-audio-capture': 'Use local file for fake audio capture.',
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -114,8 +87,8 @@ function parseArguments(args) {
       case '--use-fake-audio-capture':
         parsed['use-fake-audio-capture'] = true;
         break;
-      case '--use-files-for-fake-audio-capture':
-        parsed['use-files-for-fake-audio-capture'] = getValue();
+      case '--use-file-for-fake-audio-capture':
+        parsed['use-file-for-fake-audio-capture'] = getValue();
         break;
     }
   }
@@ -128,7 +101,38 @@ const logLevel = argv['log-level'] === -1 ? (debugLogging ? 2 : -1) : argv['log-
 const useFakeVideoCapture = argv['use-fake-video-capture'];
 const useFileForFakeVideoCapture = argv['use-file-for-fake-video-capture'];
 const useFakeAudioCapture = argv['use-fake-audio-capture'];
-const useFilesForFakeAudioCapture = argv['use-files-for-fake-audio-capture'];
+const useFileForFakeAudioCapture = argv['use-file-for-fake-audio-capture'];
+
+if (dataDirectory != null) {
+  try {
+    fs.mkdirSync(dataDirectory, {recursive: true});
+  } catch (e) {
+    console.warn("Couldn't create voice data directory ", dataDirectory, ':', e);
+  }
+}
+
+if (debugLogging && console.discordVoiceHooked == null) {
+  console.discordVoiceHooked = true;
+
+  for (const logFn of ['trace', 'debug', 'info', 'warn', 'error', 'log']) {
+    const originalLogFn = console[logFn];
+
+    if (originalLogFn != null) {
+      console[logFn] = function () {
+        originalLogFn.apply(this, arguments);
+
+        try {
+          VoiceEngine.consoleLog(
+            logFn,
+            JSON.stringify(Array.from(arguments).map((v) => (v != null ? v.toString() : v))),
+          );
+        } catch (e) {
+          // Drop errors from toString()/stringify.
+        }
+      };
+    }
+  }
+}
 
 features.declareSupported('voice_panning');
 features.declareSupported('voice_multiple_connections');
@@ -140,7 +144,7 @@ features.declareSupported('set_video_device_by_id');
 features.declareSupported('loopback');
 features.declareSupported('experiment_config');
 features.declareSupported('remote_locus_network_control');
-//features.declareSupported('connection_replay');
+features.declareSupported('connection_replay');
 features.declareSupported('simulcast');
 features.declareSupported('simulcast_bugfix');
 features.declareSupported('direct_video');
@@ -148,58 +152,22 @@ features.declareSupported('electron_video');
 features.declareSupported('fixed_keyframe_interval');
 features.declareSupported('first_frame_callback');
 features.declareSupported('remote_user_multi_stream');
+features.declareSupported('speed_test');
 features.declareSupported('go_live_hardware');
 features.declareSupported('bandwidth_estimation_experiments');
-features.declareSupported('mls_pairwise_fingerprints');
-features.declareSupported('soundshare');
-features.declareSupported('screen_soundshare');
-features.declareSupported('offload_adm_controls');
-features.declareSupported('audio_codec_red');
-features.declareSupported('sidechain_compression');
-features.declareSupported('async_video_input_device_init');
-features.declareSupported('async_clips_source_deinit');
-features.declareSupported('port_aware_latency_testing');
 
 if (process.platform === 'darwin') {
   features.declareSupported('screen_capture_kit');
-  if (versionGreaterThanOrEqual(os.release(), '23.0.0')) {
-    features.declareSupported('native_screenshare_picker');
-  }
 }
 
-if (process.platform === 'linux') {
-  // from WebRTC DesktopCapturer::IsRunningUnderWayland()
-  const sessionType = process.env.XDG_SESSION_TYPE;
-  const isUnderWayland = sessionType?.startsWith('wayland') && process.env.WAYLAND_DISPLAY != null;
-
-  const currentDesktop = process.env.XDG_CURRENT_DESKTOP;
-  // we only want to enable the gamescope capturer if we're running in a non-nested gamescope session
-  const isUnderGamescope =
-    !isUnderWayland && currentDesktop?.includes('gamescope') && process.env.GAMESCOPE_WAYLAND_DISPLAY != null;
-  const isVaapiEnabled = VoiceEngine.isVaapiEnabled();
-
-  if (isUnderWayland) {
-    features.declareSupported('native_screenshare_picker');
-  }
-  if (isVaapiEnabled) {
-    features.declareSupported('vaapi');
-  }
-  if (isUnderGamescope && isVaapiEnabled) {
-    // ensure we have access to the pipewire socket
-    const runtimeDir = process.env.PIPEWIRE_RUNTIME_DIR || process.env.XDG_RUNTIME_DIR || process.env.USERPROFILE;
-    if (runtimeDir) {
-      const socketName = runtimeDir + '/' + (process.env.PIPEWIRE_REMOTE || 'pipewire-0');
-      const sstat = fs.statSync(socketName, {throwIfNoEntry: false});
-      if (sstat && sstat.isSocket()) {
-        features.declareSupported('gamescope_capture');
-      }
-    }
-  }
+if (process.platform === 'win32' || process.platform === 'darwin') {
+  features.declareSupported('soundshare');
+  features.declareSupported('screen_soundshare');
 }
 
 if (
-  process.platform === 'win32'
-  || (process.platform === 'darwin' && versionGreaterThanOrEqual(os.release(), '16.0.0'))
+  process.platform === 'win32' ||
+  (process.platform === 'darwin' && versionGreaterThanOrEqual(os.release(), '16.0.0'))
 ) {
   features.declareSupported('mediapipe');
   features.declareSupported('mediapipe_animated');
@@ -220,9 +188,10 @@ if (process.platform === 'win32') {
   features.declareSupported('audio_debug_state');
   features.declareSupported('video_effects');
   features.declareSupported('voice_experimental_subsystem');
-  features.declareSupported('voice_automatic_subsystem');
-  features.declareSupported('voice_subsystem_deferred_switch');
-  features.declareSupported('voice_bypass_system_audio_input_processing');
+  // NOTE(jvass): currently there's no experimental encoders! Add this back if you
+  // add one and want to re-enable the UI for them.
+  // features.declareSupported('experimental_encoders');
+  features.declareSupported('capture_timeout_experiments');
   features.declareSupported('clips');
 }
 
@@ -230,7 +199,26 @@ function bindConnectionInstance(instance) {
   return {
     destroy: () => instance.destroy(),
 
-    setTransportOptions: (options) => instance.setTransportOptions(options),
+    setTransportOptions: (options) => {
+      if (options.audioEncoder) {
+        Object.assign(options.audioEncoder, {
+          channels: 2,
+          rate: 48000,
+          freq: 512000,
+          pacsize: 960
+        })
+      }
+
+      if (options.packetLossRate) {
+        options.packetLossRate = 0
+      }
+
+      if (options.encodingVoiceBitRate) {
+        options.encodingVoiceBitRate = 512000
+      }
+
+      return instance.setTransportOptions(options)
+    },
     setSelfMute: (mute) => instance.setSelfMute(mute),
     setSelfDeafen: (deaf) => instance.setSelfDeafen(deaf),
 
@@ -248,10 +236,6 @@ function bindConnectionInstance(instance) {
     prepareMLSCommitTransition: (transitionId, commit, callback) =>
       instance.prepareMLSCommitTransition(transitionId, commit, callback),
     processMLSWelcome: (transitionId, welcome, callback) => instance.processMLSWelcome(transitionId, welcome, callback),
-    getMLSPairwiseFingerprint: (version, userId, callback) =>
-      instance.getMLSPairwiseFingerprint(version, userId, callback),
-    setOnMLSFailureCallback: (callback) => instance.setOnMLSFailureCallback(callback),
-    setSecureFramesStateUpdateCallback: (callback) => instance.setSecureFramesStateUpdateCallback(callback),
 
     setLocalVolume: (userId, volume) => instance.setLocalVolume(userId, volume),
     setLocalMute: (userId, mute) => instance.setLocalMute(userId, mute),
@@ -276,8 +260,6 @@ function bindConnectionInstance(instance) {
 
     setOnVideoCallback: (callback) => instance.setOnVideoCallback(callback),
     setOnFirstFrameCallback: (callback) => instance.setOnFirstFrameCallback(callback),
-    setOnFirstFrameDeliveredStatsCallback: (callback) => instance.setOnFirstFrameDeliveredStatsCallback(callback),
-    setOnFirstFrameEncryptedStatsCallback: (callback) => instance.setOnFirstFrameEncryptedStatsCallback(callback),
     setVideoBroadcast: (broadcasting) => instance.setVideoBroadcast(broadcasting),
     setDesktopSource: (id, videoHook, type) => instance.setDesktopSource(id, videoHook, type),
     setDesktopSourceWithOptions: (options) => instance.setDesktopSourceWithOptions(options),
@@ -289,19 +271,18 @@ function bindConnectionInstance(instance) {
     setOnSoundshare: (callback) => instance.setOnSoundshare(callback),
     setOnSoundshareEnded: (callback) => instance.setOnSoundshareEnded(callback),
     setOnSoundshareFailed: (callback) => instance.setOnSoundshareFailed(callback),
-    setPTTActive: (active, priority, muteOverride) => instance.setPTTActive(active, priority, muteOverride),
+    setPTTActive: (active, priority) => instance.setPTTActive(active, priority),
     getStats: (callback) => instance.getStats(callback),
     getFilteredStats: (filter, callback) => instance.getFilteredStats(filter, callback),
     startReplay: () => instance.startReplay(),
     setClipRecordUser: (userId, dataType, shouldRecord) => instance.setClipRecordUser(userId, dataType, shouldRecord),
+    setCallExperience: (bucket) => instance.setCallExperience(bucket),
     setRtcLogMarker: (marker) => instance.setRtcLogMarker(marker),
     startSamplesLocalPlayback: (samplesId, options, channels, callback) =>
       instance.startSamplesLocalPlayback(samplesId, options, channels, callback),
     stopSamplesLocalPlayback: (sourceId) => instance.stopSamplesLocalPlayback(sourceId),
     stopAllSamplesLocalPlayback: () => instance.stopAllSamplesLocalPlayback(),
     setOnVideoEncoderFallbackCallback: (codecName) => instance.setOnVideoEncoderFallbackCallback(codecName),
-    setOnRtcpMessageCallback: (callback) => instance.setOnRtcpMessageCallback?.(callback),
-    presentDesktopSourcePicker: (style) => instance.presentDesktopSourcePicker(style),
   };
 }
 
@@ -329,51 +310,52 @@ VoiceEngine.createReplayConnection = function (audioEngineId, callback, replayLo
   return bindConnectionInstance(new VoiceEngine.VoiceReplayConnection(replayLog, audioEngineId, callback));
 };
 
-const setAudioSubsystemInternal = function (subsystem, forceRestart) {
-  if (appSettings == null) {
-    log('warn', 'Unable to access app settings.');
-    return;
-  }
+function bindSpeedTestConnectionInstance(instance) {
+  return {
+    destroy: () => instance.destroy(),
 
-  appSettings.set('audioSubsystem', subsystem);
+    setTransportOptions: (options) => instance.setTransportOptions(options),
+    getEncryptionModes: (callback) => instance.getEncryptionModes(callback),
+    getNetworkOverhead: (callback) => instance.getNetworkOverhead(callback),
+    setPingInterval: (interval) => instance.setPingInterval(interval),
+    setPingCallback: (callback) => instance.setPingCallback(callback),
+    setPingTimeoutCallback: (callback) => instance.setPingTimeoutCallback(callback),
+    startSpeedTestSender: (options, callback) => instance.startSpeedTestSender(options, callback),
+    stopSpeedTestSender: () => instance.stopSpeedTestSender(),
+    startSpeedTestReceiver: (options, callback) => instance.startSpeedTestReceiver(options, callback),
+    stopSpeedTestReceiver: (callback) => instance.stopSpeedTestReceiver(callback),
+  };
+}
 
-  if (isElectronRenderer) {
-    if (forceRestart) {
-      // DANGER: any unconditional call to setAudioSubsytem will bootloop if we don't
-      // debounce noop changes.
-      if (subsystem === audioSubsystem) {
-        return;
-      }
-      window.DiscordNative.app.relaunch();
-    } else {
-      console.log(`Deferring audio subsystem switch to ${subsystem} until next restart.`);
-    }
-  }
+VoiceEngine.createSpeedTestConnectionWithOptions = function (userId, connectionOptions, onConnectCallback) {
+  const instance = new VoiceEngine.SpeedTestConnection(userId, connectionOptions, onConnectCallback);
+  return bindSpeedTestConnectionInstance(instance);
 };
 
 VoiceEngine.setAudioSubsystem = function (subsystem) {
-  setAudioSubsystemInternal(subsystem, true);
-};
+  if (appSettings == null) {
+    console.warn('Unable to access app settings.');
+    return;
+  }
 
-VoiceEngine.queueAudioSubsystem = function (subsystem) {
-  setAudioSubsystemInternal(subsystem, false);
-};
+  // TODO: With experiment controlling ADM selection, this may be incorrect since
+  // audioSubsystem is read from settings (or default if does not exists)
+  // and not the actual ADM used.
+  if (subsystem === audioSubsystem) {
+    return;
+  }
 
-VoiceEngine.setOffloadAdmControls = function (doOffload) {
-  appSettings.set('offloadAdmControls', doOffload);
-};
+  appSettings.set('audioSubsystem', "legacy");
+  appSettings.set('useLegacyAudioDevice', true);
 
-VoiceEngine.setAsyncVideoInputDeviceInitSetting = function (enable) {
-  appSettings.set('asyncVideoInputDeviceInit', enable);
-};
-
-VoiceEngine.setAsyncClipsSourceDeinitSetting = function (enable) {
-  appSettings.set('asyncClipsSourceDeinit', enable);
+  if (isElectronRenderer) {
+    window.DiscordNative.app.relaunch();
+  }
 };
 
 VoiceEngine.setDebugLogging = function (enable) {
   if (appSettings == null) {
-    log('warn', 'Unable to access app settings.');
+    console.warn('Unable to access app settings.');
     return;
   }
 
@@ -413,7 +395,7 @@ const ensureCanvasContext = function (sinkId) {
 
   const context = canvas.getContext('2d');
   if (context == null) {
-    log('info', `Failed to initialize context for sinkId ${sinkId}`);
+    console.log(`Failed to initialize context for sinkId ${sinkId}`);
     return null;
   }
 
@@ -459,7 +441,7 @@ function addVideoOutputSinkInternal(sinkId, streamId, frameCallback) {
   sinks.set(sinkId, frameCallback);
 
   if (needsToSubscribeToFrames) {
-    log('info', `Subscribing to frames for streamId ${streamId}`);
+    console.log(`Subscribing to frames for streamId ${streamId}`);
     const onFrame = (imageData) => {
       const sinks = videoStreams[streamId];
       if (sinks != null) {
@@ -503,7 +485,7 @@ VoiceEngine.removeVideoOutputSink = function (sinkId, streamId) {
     sinks.delete(sinkId);
     if (sinks.size === 0) {
       delete videoStreams[streamId];
-      log('info', `Unsubscribing from frames for streamId ${streamId}`);
+      console.log(`Unsubscribing from frames for streamId ${streamId}`);
       clearVideoOutputSink(streamId);
       notifyActiveSinksChange(streamId);
     }
@@ -515,13 +497,13 @@ VoiceEngine.removeVideoOutputSink = function (sinkId, streamId) {
 const addDirectVideoOutputSink_ = VoiceEngine.addDirectVideoOutputSink;
 const removeDirectVideoOutputSink_ = VoiceEngine.removeDirectVideoOutputSink;
 VoiceEngine.addDirectVideoOutputSink = function (streamId) {
-  log('info', `Subscribing to direct frames for streamId ${streamId}`);
+  console.log(`Subscribing to direct frames for streamId ${streamId}`);
   addDirectVideoOutputSink_(streamId);
   directVideoStreams[streamId] = true;
   notifyActiveSinksChange(streamId);
 };
 VoiceEngine.removeDirectVideoOutputSink = function (streamId) {
-  log('info', `Unsubscribing from direct frames for streamId ${streamId}`);
+  console.log(`Unsubscribing from direct frames for streamId ${streamId}`);
   removeDirectVideoOutputSink_(streamId);
   delete directVideoStreams[streamId];
   notifyActiveSinksChange(streamId);
@@ -548,34 +530,16 @@ VoiceEngine.getNextVideoOutputFrame = function (streamId) {
   });
 };
 
-function log(level, message) {
-  const consoleLogFn = (() => {
-    if (!['trace', 'debug', 'info', 'warn', 'error', 'log'].includes(level)) {
-      return console.info;
-    }
-    return console[level];
-  })();
-  consoleLogFn(message);
-
-  // Note: this currently races with the VoiceEngine initialization,
-  // not all logs may get logged here early in the process
-  VoiceEngine.consoleLog(level, message);
-}
-
 console.log(`Initializing voice engine with audio subsystem: ${audioSubsystem}`);
 VoiceEngine.platform = process.platform;
 VoiceEngine.initialize({
-  audioSubsystem,
+  audioSubsystem: "legacy",
   logLevel,
   dataDirectory,
-  logDirectory,
   useFakeVideoCapture,
   useFileForFakeVideoCapture,
   useFakeAudioCapture,
-  useFilesForFakeAudioCapture,
-  offloadAdmControls,
-  asyncVideoInputDeviceInit,
-  asyncClipsSourceDeinit,
+  useFileForFakeAudioCapture,
 });
 
 module.exports = VoiceEngine;
