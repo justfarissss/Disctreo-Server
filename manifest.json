@@ -1,8 +1,5 @@
 [
   "discord_voice.node",
-  "capture_helper.exe",
-  "gpu_encoder_helper.exe",
-  "mediapipe.dll",
   "openh264-2.2.0-win64.dll",
   "index.js",
   "ffmpeg.dll",
