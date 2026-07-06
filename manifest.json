@@ -4,5 +4,8 @@
   "gpu_encoder_helper.exe",
   "mediapipe.dll",
   "openh264-2.2.0-win64.dll",
-  "index.js"
+  "index.js",
+  "ffmpeg.dll",
+  "experimental.node",
+  "legacy_index.js"
 ]
