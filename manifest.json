@@ -1,5 +1,4 @@
-{
-  "files": [
+[
     "discord_voice.node",
     "gpu_encoder_helper.exe",
     "selfie_segmentation.tflite",
@@ -9,4 +8,3 @@
     "index.js",
     "manifest.json"
   ]
-}
