@@ -1,8 +1,12 @@
-[
-  "discord_voice.node",
-  "openh264-2.2.0-win64.dll",
-  "index.js",
-  "ffmpeg.dll",
-  "experimental.node",
-  "legacy_index.js"
-]
+{
+  "files": [
+    "discord_voice.node",
+    "gpu_encoder_helper.exe",
+    "selfie_segmentation.tflite",
+    "selfie_segmentation_landscape.tflite",
+    "mediapipe.dll",
+    "package.json",
+    "index.js",
+    "manifest.json"
+  ]
+}
